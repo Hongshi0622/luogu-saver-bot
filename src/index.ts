@@ -1,7 +1,8 @@
-import { Context, Schema } from 'koishi'
+import { Context, Schema, h } from 'koishi'
 import { TaskStatus, statusToString } from './task'
 
 export const name = 'luogu-saver-bot'
+export const inject = ['puppeteer']
 
 export interface Config {
   endpoint?: string
@@ -139,6 +140,7 @@ class LuoguSaverClient {
 declare module 'koishi' {
   interface Context {
     luogu_saver: LuoguSaverClient
+    puppeteer?: any
   }
 }
 
@@ -170,7 +172,6 @@ export function apply(ctx: Context, config: Config = {}) {
   //     }
   //   })
 
-  // 便捷示例：创建保存任务
   ctx.command('创建保存任务 <target> <targetId>', '创建类型为 save 的任务')
     .action(async (_, target, targetId) => {
       const body: TaskCreateSave = { type: 'save', payload: { target, targetId } }
@@ -187,5 +188,49 @@ export function apply(ctx: Context, config: Config = {}) {
       if (task == null) return '任务不存在或返回为空'
       if (typeof task === 'object' && 'status' in task) return `任务 ${id} 状态: ${statusToString((task as any).status)}`
       return JSON.stringify(task)
+    })
+
+  ctx.command('获取文章 <id>', '获取文章并截取长图')
+    .option('width', '-w <width:number>', { fallback: 960 })
+    .action(async ({ session, options }, id) => {
+      if (!id) return '请提供文章 ID'
+      const art = await ctx.luogu_saver.getArticle(id)
+      if (!art) return '未找到文章'
+
+      const content = (art.renderedContent ?? art.content ?? '') as string
+      const title = art.title ?? ''
+
+      const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as any)[c])
+
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,\"Helvetica Neue\",Arial;padding:20px;line-height:1.8;color:#222}img{max-width:100%}h1{font-size:24px;margin-bottom:12px}</style></head><body><h1>${escapeHtml(title)}</h1>${content}</body></html>`
+
+      if (!ctx.puppeteer) return '当前没有可用的 puppeteer 服务。'
+
+      const page = await ctx.puppeteer.page()
+      try {
+        const width = Number(options.width) || 960
+        await page.setViewport({ width, height: 800 })
+        // 强制浅色主题，避免因 prefers-color-scheme 导致的全黑截图
+        if (typeof page.emulateMediaFeatures === 'function') {
+          await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' } as any])
+        }
+        await page.setContent(html, { waitUntil: 'networkidle0' })
+        // 强制页面白色背景，避免透明或黑底问题
+        try {
+          await page.evaluate(() => {
+            document.documentElement.style.background = '#ffffff'
+            if (document.body) document.body.style.background = '#ffffff'
+          })
+        } catch (e) {
+          // ignore
+        }
+        const buffer = await page.screenshot({ fullPage: true, type: 'png', omitBackground: false })
+        return h.image(buffer as Buffer, 'image/png')
+      } catch (err) {
+        ctx.logger.error('截图文章失败', err)
+        return '获取失败'
+      } finally {
+        page.close()
+      }
     })
 }
