@@ -1,4 +1,5 @@
 import { Context, Schema } from 'koishi'
+import { TaskStatus, statusToString } from './task'
 
 export const name = 'luogu-saver-bot'
 
@@ -50,6 +51,22 @@ export type ArticleHistory = {
 export type CountResponse = { count: number }
 
 export type TaskQuery = Record<string, any> | null
+
+export type Task = {
+  id: string
+  info?: string | null
+  status: 0 | 1 | 2 | 3
+  createdAt: string
+  type: 'save' | 'ai_process'
+  target?: string | null
+  payload: Record<string, any>
+}
+
+export type TaskCreateBase = { type: string; payload: Record<string, any> }
+export type TaskCreateSave = TaskCreateBase & { type: 'save'; payload: { target: string; targetId: string; metadata?: Record<string, any> } }
+export type TaskCreateAi = TaskCreateBase & { type: 'ai_process'; payload: { target: string; metadata: Record<string, any> } }
+
+export type TaskCreateResponse = { taskId: string }
 
 class LuoguSaverClient {
   constructor(private ctx: Context, public endpoint: string, public userAgent: string) {
@@ -104,6 +121,13 @@ class LuoguSaverClient {
     return res?.data?.data ?? null as ArticleHistory[] | null
   }
 
+  async createTask(body: TaskCreateSave | TaskCreateAi, extraHeaders?: Record<string, string>) {
+    const url = this.buildUrl('/task/create')
+    const res = await this.ctx.http.post<StdResponse<TaskCreateResponse>>(url, body, { headers: this.headers(extraHeaders) })
+    if (res.code !== 200) return null
+    return res.data.taskId
+  }
+
   async getTask(id: string, extraHeaders?: Record<string, string>) {
     const url = this.buildUrl(`/task/query/${encodeURIComponent(id)}`)
     const res = await this.ctx.http.get<StdResponse<TaskQuery>>(url, { headers: this.headers(extraHeaders) })
@@ -133,13 +157,35 @@ export function apply(ctx: Context, config: Config = {}) {
       return `${art.title} by ${art.authorId}`
     })
 
+  // 示例命令：创建任务（接受 JSON 字符串）
+  // ctx.command('创建任务 <json>', '通过 JSON 请求体创建任务')
+  //   .action(async (_, json) => {
+  //     try {
+  //       const body = JSON.parse(json) as TaskCreateSave | TaskCreateAi
+  //       const id = await ctx.luogu_saver.createTask(body)
+  //       if (!id) return '创建失败'
+  //       return `任务已创建，ID: ${id}`
+  //     } catch (err) {
+  //       return '无效的 JSON 或创建失败'
+  //     }
+  //   })
+
+  // 便捷示例：创建保存任务
+  ctx.command('创建保存任务 <target> <targetId>', '创建类型为 save 的任务')
+    .action(async (_, target, targetId) => {
+      const body: TaskCreateSave = { type: 'save', payload: { target, targetId } }
+      const id = await ctx.luogu_saver.createTask(body)
+      if (!id) return '创建失败'
+      return `保存任务已创建，ID: ${id}`
+    })
+
   // 示例命令：查询任务状态
   ctx.command('查询任务状态 <id>', '查询任务状态')
     .action(async ({ options }, id) => {
       if (!id) return '请提供任务 ID'
       const task = await ctx.luogu_saver.getTask(id)
       if (task == null) return '任务不存在或返回为空'
-      if (typeof task === 'object' && 'status' in task) return `任务 ${id} 状态: ${task.status}`
+      if (typeof task === 'object' && 'status' in task) return `任务 ${id} 状态: ${statusToString((task as any).status)}`
       return JSON.stringify(task)
     })
 }
