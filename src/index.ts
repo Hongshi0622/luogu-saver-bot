@@ -49,6 +49,24 @@ export type ArticleHistory = {
   createdAt: string
 }
 
+export type Paste = {
+  id: string
+  content: string
+  authorId: number
+  deleted?: number | boolean
+  createdAt?: string
+  updatedAt?: string
+  deleteReason?: string
+  renderedContent?: string | null
+  author?: {
+    id: number
+    name: string
+    color?: string
+    createdAt?: string
+    updatedAt?: string
+  }
+}
+
 export type CountResponse = { count: number }
 
 export type TaskQuery = Record<string, any> | null
@@ -89,6 +107,13 @@ class LuoguSaverClient {
   async getArticle(id: string, extraHeaders?: Record<string, string>) {
     const url = this.buildUrl(`/article/query/${encodeURIComponent(id)}`)
     const res = await this.ctx.http.get<StdResponse<Article>>(url, { headers: this.headers(extraHeaders) })
+    if (res.code !== 200) return null
+    return res.data
+  }
+
+  async getPaste(id: string, extraHeaders?: Record<string, string>) {
+    const url = this.buildUrl(`/paste/query/${encodeURIComponent(id)}`)
+    const res = await this.ctx.http.get<StdResponse<Paste>>(url, { headers: this.headers(extraHeaders) })
     if (res.code !== 200) return null
     return res.data
   }
@@ -233,4 +258,45 @@ export function apply(ctx: Context, config: Config = {}) {
         page.close()
       }
     })
+
+    // 新增命令：截图剪贴为长图
+    ctx.command('获取剪贴板 <id>', '获取剪贴板内容并截取长图')
+      .option('width', '-w <width:number>', { fallback: 960 })
+      .action(async ({ session, options }, id) => {
+        if (!id) return '请提供剪贴板 ID'
+        const paste = await ctx.luogu_saver.getPaste(id)
+        if (!paste) return '未找到剪贴板内容'
+
+        const content = (paste.renderedContent ?? paste.content ?? '') as string
+        const title = paste.id ?? ''
+
+        const escapeHtml = (s: string) => s.replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' } as any)[c])
+
+        const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,\"Helvetica Neue\",Arial;padding:20px;line-height:1.8;color:#222}pre,code{white-space:pre-wrap;word-break:break-word;background:#f8f8f8;padding:12px;border-radius:6px}h1{font-size:18px;margin-bottom:8px}</style></head><body><h1>${escapeHtml(title)}</h1>${content}</body></html>`
+
+        if (!ctx.puppeteer) return '当前没有可用的 puppeteer 服务。'
+
+        const page = await ctx.puppeteer.page()
+        try {
+          const width = Number(options.width) || 960
+          await page.setViewport({ width, height: 800 })
+          if (typeof page.emulateMediaFeatures === 'function') {
+            await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' } as any])
+          }
+          await page.setContent(html, { waitUntil: 'networkidle0' })
+          try {
+            await page.evaluate(() => {
+              document.documentElement.style.background = '#ffffff'
+              if (document.body) document.body.style.background = '#ffffff'
+            })
+          } catch (e) {}
+          const buffer = await page.screenshot({ fullPage: true, type: 'png', omitBackground: false })
+          return h.image(buffer as Buffer, 'image/png')
+        } catch (err) {
+          ctx.logger.error('截图剪贴板失败', err)
+          return '获取失败。'
+        } finally {
+          page.close()
+        }
+      })
 }
